@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Universal ML Explorer · 3D AI Edition</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono&display=swap" rel="stylesheet">
+    
+    <style>
+        body { 
+            font-family: 'Outfit', sans-serif; 
+            margin: 0; 
+            overflow-x: hidden; 
+            background-color: #000; 
+            color: #fff; 
+        }
+        
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            opacity: 0.8;
+        }
+
+        .glass-panel {
+            background: rgba(15, 15, 25, 0.45);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 30px 60px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+        }
+
+        .ai-gradient-text {
+            background: linear-gradient(135deg, #00f2fe 0%, #4facfe 50%, #f093fb 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-size: 200% auto;
+            animation: shine 4s linear infinite;
+        }
+
+        @keyframes shine {
+            to { background-position: 200% center; }
+        }
+
+        .neon-input {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.3s ease;
+        }
+
+        .neon-input:focus {
+            border-color: #4facfe;
+            box-shadow: 0 0 20px rgba(79, 172, 254, 0.2);
+            outline: none;
+            background: rgba(0, 0, 0, 0.6);
+        }
+
+        .neon-button {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: #000;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            box-shadow: 0 0 20px rgba(0, 242, 254, 0.4);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .neon-button:hover:not(:disabled) {
+            box-shadow: 0 0 40px rgba(0, 242, 254, 0.6);
+            transform: translateY(-2px) scale(1.02);
+        }
+        
+        .neon-button:active:not(:disabled) {
+            transform: translateY(1px) scale(0.98);
+        }
+
+        .loader-ring {
+            border: 3px solid rgba(0,0,0,0.1);
+            border-top-color: #000;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        [x-cloak] { display: none !important; }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center py-16 px-6" x-data="explorer()">
+
+    <!-- 3D Background -->
+    <div id="canvas-container"></div>
+
+    <!-- Main Content wrapper -->
+    <div class="relative z-10 w-full max-w-4xl space-y-10">
+        
+        <!-- Header -->
+        <header class="text-center space-y-4 pt-10 pb-6">
+            <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/5 border border-white/10 text-cyan-400 text-xs font-bold tracking-widest uppercase shadow-2xl backdrop-blur-md">
+                <span class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
+                Universal AI Engine
+            </div>
+            <h1 class="text-6xl md:text-7xl font-extrabold tracking-tight">
+                One UI, <span class="ai-gradient-text">Any Model</span>
+            </h1>
+            <p class="text-gray-400 text-lg md:text-xl font-light max-w-2xl mx-auto">
+                Paste your dynamic model endpoint below. Our sophisticated 3D engine will automatically parse the schema and build the interface.
+            </p>
+        </header>
+
+        <!-- Command Console (URL Input) -->
+        <div class="glass-panel p-2 rounded-2xl flex flex-col md:flex-row gap-2 transition-all group">
+            <div class="flex-1 flex items-center bg-black/40 rounded-xl px-4 py-1 border border-white/5 group-focus-within:border-cyan-500/50 transition-colors">
+                <span class="text-cyan-500 font-mono text-lg mr-3">❯</span>
+                <input type="text" x-model="url" placeholder="https://model-xyz-uc.a.run.app" 
+                       class="w-full bg-transparent text-white font-mono text-sm md:text-base py-4 focus:outline-none placeholder-gray-600">
+            </div>
+            <button @click="connect()" 
+                    class="neon-button px-10 py-4 rounded-xl flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed"
+                    :disabled="loading || !url">
+                <span x-show="!loading">INITIALIZE</span>
+                <div x-show="loading" class="loader-ring" x-cloak></div>
+            </button>
+        </div>
+        
+        <!-- Error Alert -->
+        <div x-show="error" class="bg-red-500/10 border border-red-500/30 text-red-400 px-6 py-4 rounded-2xl flex items-center gap-3 text-sm font-semibold" x-transition x-cloak>
+            <span>⚠️</span> <span x-text="error"></span>
+        </div>
+
+        <!-- Dynamic Interface (Connected State) -->
+        <template x-if="metadata">
+            <div class="space-y-8" x-transition.duration.500ms>
+                
+                <!-- Model HUD -->
+                <div class="glass-panel p-8 rounded-3xl relative overflow-hidden">
+                    <div class="absolute top-0 right-0 w-64 h-64 bg-cyan-500/10 rounded-full blur-[80px]"></div>
+                    
+                    <div class="flex flex-col md:flex-row md:items-end justify-between gap-6 relative z-10">
+                        <div>
+                            <p class="text-cyan-400 font-mono text-xs mb-2 tracking-widest uppercase">Target Locked</p>
+                            <h2 class="text-3xl md:text-4xl font-extrabold" x-text="metadata.model"></h2>
+                        </div>
+                        <div class="flex flex-wrap gap-3">
+                            <div class="bg-white/5 border border-white/10 px-4 py-2 rounded-xl flex items-center gap-2">
+                                <span class="text-gray-400 text-xs uppercase tracking-wider">Task</span>
+                                <span class="font-mono text-cyan-300 font-bold text-sm" x-text="metadata.task"></span>
+                            </div>
+                            <div class="bg-white/5 border border-white/10 px-4 py-2 rounded-xl flex items-center gap-2">
+                                <span class="text-gray-400 text-xs uppercase tracking-wider">Status</span>
+                                <span class="font-mono text-green-400 font-bold text-sm flex items-center gap-2">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"></span>
+                                    LIVE
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Prediction Matrix Form -->
+                <div class="glass-panel p-8 md:p-10 rounded-3xl relative">
+                    <h3 class="text-xl font-bold mb-8 flex items-center gap-3 text-white border-b border-white/10 pb-4">
+                        <svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>
+                        Input Neural Matrix
+                        <span class="ml-auto text-xs font-mono font-normal text-gray-500" x-text="metadata.features.length + ' Vectors parameters'"></span>
+                    </h3>
+                    
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-10">
+                        <template x-for="field in metadata.features" :key="field">
+                            <div class="group">
+                                <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 group-focus-within:text-cyan-400 transition-colors" x-text="field"></label>
+                                <input type="number" step="any" x-model="inputs[field]"
+                                       class="neon-input w-full rounded-xl px-5 py-4 text-white font-mono text-lg">
+                            </div>
+                        </template>
+                    </div>
+
+                    <button @click="predict()" 
+                            class="neon-button w-full py-5 rounded-2xl flex items-center justify-center gap-3 text-lg disabled:opacity-50"
+                            :disabled="running">
+                        <div x-show="running" class="loader-ring border-t-black" x-cloak></div>
+                        <span x-text="running ? 'EXECUTING NEURAL PASS...' : 'EXECUTE PREDICTION'"></span>
+                    </button>
+                </div>
+
+                <!-- Beautiful Prediction Result -->
+                <div x-show="response" class="glass-panel p-8 md:p-12 rounded-3xl relative overflow-hidden text-center border-t border-cyan-400/50" x-transition.scale x-cloak>
+                    <!-- Animated glow behind the result -->
+                    <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-full h-full bg-cyan-500/10 rounded-full blur-[100px] pointer-events-none"></div>
+                    
+                    <p class="text-cyan-400 font-mono text-sm tracking-widest uppercase mb-4 relative z-10">Neural Output Detected</p>
+                    
+                    <div class="relative z-10 font-extrabold text-5xl md:text-8xl ai-gradient-text drop-shadow-[0_0_20px_rgba(0,242,254,0.3)] tracking-tighter"
+                         x-text="response?.prediction"></div>
+
+                    <!-- Show probabilities conditionally if it's a classification model -->
+                    </template>
+                </div>
+
+                <!-- AI Analysis Card for Universal Explorer -->
+                <div x-show="explanation || explaining" class="glass-panel p-6 rounded-3xl relative overflow-hidden border-t border-purple-500/30" x-transition.fade x-cloak>
+                    <div style="font-size: 11px; font-weight: 800; color: #a855f7; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">
+                        ✦ AI Reasoning (Explainable AI)
+                    </div>
+                    <div x-show="explaining" class="flex items-center gap-3 text-gray-400 py-2">
+                        <div class="loader-ring w-4 h-4 border-t-purple-500"></div>
+                        <span>Processing feature importance...</span>
+                    </div>
+                    <p x-show="explanation" class="text-gray-300 text-sm leading-relaxed m-0 italic" x-text="explanation"></p>
+                </div>
+
+                <!-- Response Control Bar -->
+                <div x-show="response && !explanation && !explaining" class="flex justify-center" x-cloak>
+                    <button @click="explain()" class="bg-white/5 hover:bg-white/10 border border-white/10 px-8 py-3 rounded-full text-xs font-bold tracking-widest text-purple-400 hover:text-purple-300 transition-all uppercase">
+                        ✧ Explain This Result (XAI)
+                    </button>
+                </div>
+
+                <!-- Terminal Debug Results -->
+                <div x-show="response" class="glass-panel rounded-3xl overflow-hidden border border-white/10 opacity-75 hover:opacity-100 transition-opacity" x-transition x-cloak>
+                    <div class="bg-black/80 px-6 py-4 flex items-center justify-between border-b border-white/5">
+                        <div class="flex items-center gap-2">
+                            <div class="w-3 h-3 rounded-full bg-red-500/50"></div>
+                            <div class="w-3 h-3 rounded-full bg-yellow-500/50"></div>
+                            <div class="w-3 h-3 rounded-full bg-green-500/50"></div>
+                            <span class="ml-3 text-xs font-mono text-gray-500">raw_payload.json</span>
+                        </div>
+                        <span class="text-xs font-mono text-cyan-500/70 bg-cyan-500/5 px-2 py-1 rounded" x-text="latency + 'ms execution time'"></span>
+                    </div>
+                    <div class="p-6 bg-black/60">
+                        <pre class="font-mono text-gray-400 text-xs md:text-sm overflow-x-auto whitespace-pre-wrap" x-text="JSON.stringify(response, null, 2)"></pre>
+                    </div>
+                </div>
+
+            </div>
+        </template>
+        
+        <!-- Footer Spacer -->
+        <div class="h-24"></div>
+
+    </div>
+
+    <!-- Logic -->
+    <script>
+        function explorer() {
+            return {
+                url: '',
+                loading: false,
+                running: false,
+                error: '',
+                metadata: null,
+                inputs: {},
+                response: null,
+                latency: 0,
+                explanation: '',
+                explaining: false,
+
+                async connect() {
+                    this.error = '';
+                    this.loading = true;
+                    this.metadata = null;
+                    this.response = null;
+                    this.explanation = '';
+                    this.explaining = false;
+                    
+                    try {
+                        const baseUrl = this.url.replace(/\/$/, ""); 
+                        const res = await fetch(baseUrl + "/");
+                        if (!res.ok) throw new Error("Could not connect. Is the URL correct and public?");
+                        
+                        let data = await res.json();
+                        
+                        // Legacy support fallback
+                        if (!data.features) {
+                            const schemaRes = await fetch(baseUrl + "/openapi.json");
+                            if (schemaRes.ok) {
+                                const schema = await schemaRes.json();
+                                const properties = schema.components?.schemas?.InputData?.properties;
+                                if (properties) data.features = Object.keys(properties);
+                            }
+                        }
+
+                        if (!data.features) throw new Error("Could not map neural input vectors. Please re-deploy.");
+                        
+                        this.metadata = data;
+                        
+                        // Ensure model_id is present for XAI analysis
+                        if (!this.metadata.model_id) {
+                            const match = this.url.match(/model-([a-f0-9]{8})/);
+                            if (match) this.metadata.model_id = match[1];
+                        }
+
+                        this.inputs = {};
+                        data.features.forEach(f => this.inputs[f] = 0);
+                        
+                        // Flash effect on connect
+                        document.body.style.boxShadow = "inset 0 0 100px rgba(0, 242, 254, 0.2)";
+                        setTimeout(() => document.body.style.boxShadow = "none", 1000);
+                        
+                    } catch (e) {
+                        this.error = e.message;
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+
+                async predict() {
+                    this.running = true;
+                    this.response = null;
+                    this.explanation = '';
+                    const startTime = Date.now();
+                    
+                    try {
+                        const cleanUrl = this.url.replace(/\/$/, "");
+                        const res = await fetch(cleanUrl + "/predict", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(this.inputs)
+                        });
+                        
+                        if (!res.ok) throw new Error(await res.text() || "Prediction execution failed");
+                        
+                        this.response = await res.json();
+                        this.latency = Date.now() - startTime;
+                    } catch (e) {
+                        this.error = "Engine Error: " + e.message;
+                    } finally {
+                        this.running = false;
+                    }
+                },
+
+                async explain() {
+                    if (!this.response) return;
+                    this.explaining = true;
+                    try {
+                        const baseUrl = "http://localhost:8000";
+                        const res = await fetch(`${baseUrl}/api/logs/${this.metadata.model_id}/explain`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                inputs: this.inputs,
+                                prediction: this.response.prediction,
+                                inspection: this.metadata
+                            })
+                        });
+                        const data = await res.json();
+                        this.explanation = data.explanation;
+                    } catch (e) {
+                        this.explanation = "AI Reasoning Engine currently unavailable.";
+                    } finally {
+                        this.explaining = false;
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- 3D Neural Network Script -->
+    <script>
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x000000, 0.001);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 4000);
+        camera.position.z = 1000;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        container.appendChild(renderer.domElement);
+
+        // Nodes (Particles)
+        const particlesGeometry = new THREE.BufferGeometry();
+        const particlesCount = 400; // Neural nodes count
+        const posArray = new Float32Array(particlesCount * 3);
+        const velocities = [];
+
+        for (let i = 0; i < particlesCount * 3; i+=3) {
+            posArray[i] = (Math.random() - 0.5) * 3000;
+            posArray[i+1] = (Math.random() - 0.5) * 3000;
+            posArray[i+2] = (Math.random() - 0.5) * 3000;
+            
+            velocities.push({
+                x: (Math.random() - 0.5) * 2,
+                y: (Math.random() - 0.5) * 2,
+                z: (Math.random() - 0.5) * 2
+            });
+        }
+        
+        particlesGeometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+        
+        // Node material
+        const particleMaterial = new THREE.PointsMaterial({
+            size: 8,
+            color: 0x4facfe,
+            transparent: true,
+            opacity: 0.8,
+            blending: THREE.AdditiveBlending
+        });
+
+        const particleSystem = new THREE.Points(particlesGeometry, particleMaterial);
+        scene.add(particleSystem);
+
+        // Lines (Neural connections)
+        const linesMaterial = new THREE.LineBasicMaterial({
+            color: 0x00f2fe,
+            transparent: true,
+            opacity: 0.15,
+            blending: THREE.AdditiveBlending
+        });
+
+        // Setup mouse tracking for interaction
+        let mouseX = 0;
+        let mouseY = 0;
+        let targetX = 0;
+        let targetY = 0;
+        const windowHalfX = window.innerWidth / 2;
+        const windowHalfY = window.innerHeight / 2;
+
+        document.addEventListener('mousemove', (event) => {
+            mouseX = (event.clientX - windowHalfX) * 0.5;
+            mouseY = (event.clientY - windowHalfY) * 0.5;
+        });
+
+        // Animation Loop
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+
+            // Slerp camera based on mouse
+            targetX = mouseX * 0.05;
+            targetY = mouseY * 0.05;
+            
+            particleSystem.rotation.y += 0.001;
+            particleSystem.rotation.x += 0.0005;
+            
+            scene.rotation.x += 0.05 * (targetY - scene.rotation.x);
+            scene.rotation.y += 0.05 * (targetX - scene.rotation.y);
+
+            // Dynamically create web
+            const positions = particleSystem.geometry.attributes.position.array;
+            let linePositions = [];
+            
+            // Move particles slowly and connect close ones
+            let pIndex = 0;
+            for (let i = 0; i < particlesCount; i++) {
+                
+                // Motion
+                positions[i*3] += velocities[i].x;
+                positions[i*3+1] += velocities[i].y;
+                positions[i*3+2] += velocities[i].z;
+
+                // Box bounds collision
+                if (Math.abs(positions[i*3]) > 1500) velocities[i].x *= -1;
+                if (Math.abs(positions[i*3+1]) > 1500) velocities[i].y *= -1;
+                if (Math.abs(positions[i*3+2]) > 1500) velocities[i].z *= -1;
+
+                // Check distance to others for lines (optimise by avoiding n^2 if possible, but for 400 it's ok)
+                for (let j = i + 1; j < particlesCount; j++) {
+                    const dx = positions[i*3] - positions[j*3];
+                    const dy = positions[i*3+1] - positions[j*3+1];
+                    const dz = positions[i*3+2] - positions[j*3+2];
+                    const distSq = dx*dx + dy*dy + dz*dz;
+                    
+                    if (distSq < 40000) { // Connection threshold
+                        linePositions.push(
+                            positions[i*3], positions[i*3+1], positions[i*3+2],
+                            positions[j*3], positions[j*3+1], positions[j*3+2]
+                        );
+                    }
+                }
+            }
+            
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+            
+            // Rebuild lines each frame
+            if (scene.children.length > 1) {
+                scene.remove(scene.children[1]); // Remove old lines
+            }
+            
+            const lineGeometry = new THREE.BufferGeometry();
+            lineGeometry.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
+            const lines = new THREE.LineSegments(lineGeometry, linesMaterial);
+            scene.add(lines);
+
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        // Handle resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>

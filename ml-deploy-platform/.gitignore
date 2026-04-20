@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+
+# Env
+.env
+.env.*
+
+# OS/editor
+.DS_Store
+.vscode/
+
+# Generated model build artifacts
+/tmp/ml_uploads/
+/tmp/ml_builds/

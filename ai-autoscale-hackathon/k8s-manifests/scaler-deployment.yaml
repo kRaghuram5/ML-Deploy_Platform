@@ -1,0 +1,191 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-autoscaler
+  namespace: apps
+  labels:
+    app: ai-autoscaler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-autoscaler
+  template:
+    metadata:
+      labels:
+        app: ai-autoscaler
+    spec:
+      serviceAccountName: autoscaler
+      containers:
+      - name: scaler
+        image: python:3.11-slim
+        command:
+          - sh
+          - -c
+          - |
+            pip install kubernetes requests numpy scikit-learn > /dev/null 2>&1
+            # TensorFlow optional — will use linear regression fallback if unavailable
+            pip install tensorflow > /dev/null 2>&1 || echo "TF unavailable, using sklearn fallback"
+
+            # Write ML model trainer
+            cat > /tmp/load_predictor.py << 'PRED_EOF'
+            import numpy as np, pickle, os, requests
+            from datetime import datetime, timedelta
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.linear_model import LinearRegression
+            
+            PROMETHEUS_URL = os.getenv('PROMETHEUS_URL','http://prometheus.monitoring:9090')
+            MODEL_PATH     = '/tmp/load_predictor_model.pkl'
+            SCALER_PATH    = '/tmp/load_predictor_scaler.pkl'
+            LOOK_BACK      = 60
+            HORIZON        = 10
+            
+            def log(m): print(f"[{datetime.now():%H:%M:%S}] {m}", flush=True)
+            
+            def get_data():
+                try:
+                    end   = datetime.now()
+                    start = end - timedelta(seconds=300)
+                    r = requests.get(f"{PROMETHEUS_URL}/api/v1/query_range",
+                        params={'query':'rate(http_requests_total[1s])','start':start.timestamp(),'end':end.timestamp(),'step':'1s'},timeout=10)
+                    vals = r.json()['data']['result']
+                    if vals: return [float(v[1]) for v in vals[0]['values']]
+                except: pass
+                rng=np.random.default_rng(42)
+                return [50+200*(1 if i%150<30 else 0)+rng.normal(0,10) for i in range(300)]
+            
+            data  = np.array(get_data())
+            sc    = StandardScaler()
+            ds    = sc.fit_transform(data.reshape(-1,1)).flatten()
+            X,y   = zip(*[(ds[i:i+LOOK_BACK],ds[i+LOOK_BACK+HORIZON]) for i in range(len(ds)-LOOK_BACK-HORIZON)])
+            X,y   = np.array(X),np.array(y)
+            model = LinearRegression(); model.fit(X,y)
+            pickle.dump(model,open(MODEL_PATH,'wb')); pickle.dump(sc,open(SCALER_PATH,'wb'))
+            log(f"✓ Model saved to {MODEL_PATH}")
+            PRED_EOF
+
+            # Write AI scaler
+            cat > /tmp/ai_scaler.py << 'SCALER_EOF'
+            import os, time, pickle, requests, numpy as np
+            from datetime import datetime, timedelta
+            from kubernetes import client, config
+            
+            PROMETHEUS_URL       = os.getenv('PROMETHEUS_URL','http://prometheus.monitoring:9090')
+            NAMESPACE            = os.getenv('NAMESPACE','apps')
+            DEPLOYMENTS          = ['app1','app2','app3']
+            MODEL_PATH, SCALER_PATH = '/tmp/load_predictor_model.pkl', '/tmp/load_predictor_scaler.pkl'
+            LOOK_BACK            = 60
+            AI_UP_THRESHOLD      = 150
+            DOWN_THRESHOLD       = 30
+            MIN_REPLICAS         = 1
+            MAX_REPLICAS         = 8
+            CHECK_INTERVAL       = 10
+            
+            config.load_incluster_config()
+            v1_apps = client.AppsV1Api()
+            
+            def log(m): print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {m}", flush=True)
+            
+            def prom_range(q,s):
+                try:
+                    end=datetime.now(); start=end-timedelta(seconds=s)
+                    r=requests.get(f"{PROMETHEUS_URL}/api/v1/query_range",params={'query':q,'start':start.timestamp(),'end':end.timestamp(),'step':'1s'},timeout=10)
+                    vals=r.json()['data']['result']
+                    return [float(v[1]) for v in vals[0]['values']] if vals else []
+                except: return []
+            
+            def current_load():
+                try:
+                    r=requests.get(f"{PROMETHEUS_URL}/api/v1/query",params={'query':'rate(http_requests_total[1m])'},timeout=5).json()
+                    return float(r['data']['result'][0]['value'][1]) if r['data']['result'] else 0
+                except: return 0
+            
+            def predict():
+                try:
+                    model=pickle.load(open(MODEL_PATH,'rb')); sc=pickle.load(open(SCALER_PATH,'rb'))
+                    h=prom_range('rate(http_requests_total[1s])',LOOK_BACK)
+                    if len(h)<10: return 0
+                    hs=sc.transform(np.array(h).reshape(-1,1)).flatten()
+                    X=hs[-LOOK_BACK:].reshape(1,-1)
+                    return max(0,float(sc.inverse_transform([[model.predict(X)[0]]])[0][0]))
+                except: return 0
+            
+            def replicas(dep):
+                try: return v1_apps.read_namespaced_deployment(dep,NAMESPACE).spec.replicas or 0
+                except: return 0
+            
+            def scale(dep,n):
+                try:
+                    d=v1_apps.read_namespaced_deployment(dep,NAMESPACE); d.spec.replicas=n
+                    v1_apps.patch_namespaced_deployment(dep,NAMESPACE,d)
+                    log(f"✓ Scaled {dep} → {n}")
+                except Exception as e: log(f"❌ {dep}: {e}")
+            
+            log("🤖 AI-powered autoscaler started"); log(f"Preemptive threshold: {AI_UP_THRESHOLD} req/s")
+            os.system("python3 /tmp/load_predictor.py")
+            
+            while True:
+                log("─"*70)
+                cl=current_load(); pl=predict()
+                log(f"📊 Current: {cl:.1f} req/s | Predicted: {pl:.1f} req/s")
+                for dep in DEPLOYMENTS:
+                    r=replicas(dep)
+                    if pl>AI_UP_THRESHOLD:
+                        n=min(r+2,MAX_REPLICAS)
+                        if n>r: log(f"🚀 {dep}: PREEMPTIVE {r}→{n}"); scale(dep,n)
+                    elif cl<DOWN_THRESHOLD:
+                        n=max(r-1,MIN_REPLICAS)
+                        if n<r: log(f"📉 {dep}: {r}→{n}"); scale(dep,n)
+                    else: log(f"➡️  {dep}: steady {r} replicas")
+                time.sleep(CHECK_INTERVAL)
+            SCALER_EOF
+
+            python3 /tmp/ai_scaler.py
+        env:
+        - name: PROMETHEUS_URL
+          value: "http://prometheus.monitoring:9090"
+        - name: NAMESPACE
+          value: "apps"
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1024Mi
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: autoscaler
+  namespace: apps
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: autoscaler
+  namespace: apps
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch", "patch", "update"]
+- apiGroups: ["apps"]
+  resources: ["deployments/scale"]
+  verbs: ["get", "patch", "update"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: autoscaler
+  namespace: apps
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: autoscaler
+subjects:
+- kind: ServiceAccount
+  name: autoscaler
+  namespace: apps

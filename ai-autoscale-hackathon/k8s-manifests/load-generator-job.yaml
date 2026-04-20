@@ -1,0 +1,71 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: load-generator
+  namespace: apps
+spec:
+  template:
+    spec:
+      serviceAccountName: default
+      containers:
+      - name: generator
+        image: python:3.11-slim
+        command:
+          - sh
+          - -c
+          - |
+            pip install requests > /dev/null 2>&1
+            cat > /tmp/generator.py << 'EOF'
+            import requests
+            import time
+            import random
+            from datetime import datetime
+            
+            SERVICES = ['http://app1', 'http://app2', 'http://app3']
+            BASE_RATE = 5
+            SPIKE_RATE = 100
+            SPIKE_DURATION = 30
+            SPIKE_INTERVAL = 300
+            
+            def log(msg):
+                ts = datetime.now().strftime('%H:%M:%S')
+                print(f"[{ts}] {msg}", flush=True)
+            
+            log("🚀 Traffic generator started")
+            log(f"Base: {BASE_RATE} req/s | Spike: {SPIKE_RATE} req/s | Spike every {SPIKE_INTERVAL}s")
+            
+            start_time = time.time()
+            req_count = 0
+            err_count = 0
+            
+            while True:
+                elapsed = time.time() - start_time
+                time_in_cycle = elapsed % SPIKE_INTERVAL
+                in_spike = time_in_cycle < SPIKE_DURATION
+                
+                rate = SPIKE_RATE if in_spike else BASE_RATE
+                status = "📈 SPIKE" if in_spike else "📊 NORMAL"
+                
+                for _ in range(rate):
+                    service = random.choice(SERVICES)
+                    try:
+                        requests.get(f"{service}", timeout=1)
+                        req_count += 1
+                    except Exception:
+                        err_count += 1
+                
+                if req_count % 100 == 0:
+                    log(f"{status} | Total: {req_count} | Errors: {err_count}")
+                
+                time.sleep(1)
+            EOF
+            python /tmp/generator.py
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      restartPolicy: Never
+  backoffLimit: 3

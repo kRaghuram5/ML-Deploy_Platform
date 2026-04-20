@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: self-healer
+  namespace: apps
+  labels:
+    app: self-healer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: self-healer
+  template:
+    metadata:
+      labels:
+        app: self-healer
+    spec:
+      serviceAccountName: self-healer
+      containers:
+      - name: healer
+        image: python:3.11-slim
+        command:
+          - sh
+          - -c
+          - |
+            pip install kubernetes > /dev/null 2>&1
+            cat > /tmp/self_healer.py << 'EOF'
+            import os, time
+            from datetime import datetime
+            from kubernetes import client, config
+            
+            NAMESPACE       = os.getenv('NAMESPACE','apps')
+            CHECK_INTERVAL  = 5
+            CRASH_THRESHOLD = 3
+            
+            config.load_incluster_config()
+            v1 = client.CoreV1Api()
+            
+            def log(m): print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {m}", flush=True)
+            
+            def healthy(pod):
+                if pod.status.phase != 'Running': return False
+                for cs in (pod.status.container_statuses or []):
+                    if not cs.ready or cs.state.terminated: return False
+                return True
+            
+            def cascade(pods):
+                bad = sum(1 for p in pods if not healthy(p))
+                if pods and bad/len(pods) > 0.5:
+                    log(f"⚠️  CASCADING FAILURE: {bad}/{len(pods)} pods unhealthy!")
+                    return True
+                return False
+            
+            log("🔧 Self-healing system started"); log(f"Namespace: {NAMESPACE} | Interval: {CHECK_INTERVAL}s | Crash limit: {CRASH_THRESHOLD}")
+            counts = {}
+            
+            while True:
+                try:
+                    pods = v1.list_namespaced_pod(NAMESPACE).items
+                    cascade(pods)
+                    for pod in pods:
+                        name = pod.metadata.name
+                        if not healthy(pod):
+                            counts[name] = counts.get(name, 0) + 1
+                            if counts[name] <= CRASH_THRESHOLD:
+                                log(f"💥 Unhealthy: {name} (restart #{counts[name]})")
+                                v1.delete_namespaced_pod(name, NAMESPACE)
+                            else:
+                                log(f"🚨 {name} failing repeatedly — manual investigation needed")
+                        else:
+                            if counts.pop(name, 0) > 0:
+                                log(f"✅ Pod recovered: {name}")
+                except Exception as e:
+                    log(f"❌ Error: {e}")
+                time.sleep(CHECK_INTERVAL)
+            EOF
+            python3 /tmp/self_healer.py
+        env:
+        - name: NAMESPACE
+          value: "apps"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: self-healer
+  namespace: apps
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: self-healer
+  namespace: apps
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "delete"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: self-healer
+  namespace: apps
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: self-healer
+subjects:
+- kind: ServiceAccount
+  name: self-healer
+  namespace: apps

@@ -1,0 +1,16 @@
+import joblib
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+app = FastAPI(title="ML Model API")
+model = joblib.load("model.pkl")
+
+
+class InputData(BaseModel):
+    feature_0: float
+
+
+@app.post("/predict")
+def predict(data: InputData) -> dict:
+    prediction = model.predict([[data.feature_0]])[0]
+    return {"prediction": float(prediction)}
