@@ -6,7 +6,9 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
-
+.gitignore
+frontend/node_modules/
+ml-deploy-platform/sample-model
 # Node
 node_modules/
 dist/
